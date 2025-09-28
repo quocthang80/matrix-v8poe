@@ -532,43 +532,102 @@
         currentCell = null;
     }
 
+    // --- REVISED FUNCTION ---
     function saveCellData() {
         if (!currentCell) return;
 
-        const multipleChoice = parseInt(document.getElementById('multipleChoiceCount').value) || 0;
-        const trueFalse = parseInt(document.getElementById('trueFalseCount').value) || 0;
-        const essay = parseInt(document.getElementById('essayCount').value) || 0;
-        const notes = document.getElementById('cellNotes').value.trim();
+        // 1. Get current values from the modal
+        const newData = {
+            multipleChoice: parseInt(document.getElementById('multipleChoiceCount').value) || 0,
+            trueFalse: parseInt(document.getElementById('trueFalseCount').value) || 0,
+            essay: parseInt(document.getElementById('essayCount').value) || 0,
+            notes: document.getElementById('cellNotes').value.trim(),
+            position: document.getElementById('questionPosition').value.trim(),
+        };
+        newData.count = newData.multipleChoice + newData.trueFalse + newData.essay;
         const cellKey = `${currentCell.topic}_${currentCell.level}`;
 
-        const position = document.getElementById('questionPosition').value.trim();
-        const totalCount = multipleChoice + trueFalse + essay;
+        // 2. Define the final save action
+        const performSave = () => {
+            if (newData.count === 0) {
+                delete matrixData[cellKey];
+            } else {
+                matrixData[cellKey] = newData;
+            }
+            renderMatrix();
+            updateSummaryTable();
+            closeCellModal();
+            showSuccessMessage('Đã lưu dữ liệu ô ma trận!');
+        };
 
-        if (totalCount === 0) {
-             // If the cell becomes empty, remove it from the data
-            delete matrixData[cellKey];
+        // 3. Create a temporary copy of the matrix data to simulate the change
+        const tempMatrixData = JSON.parse(JSON.stringify(matrixData));
+        if (newData.count === 0) {
+            delete tempMatrixData[cellKey];
         } else {
-            matrixData[cellKey] = {
-                multipleChoice,
-                trueFalse,
-                essay,
-                count: totalCount,
-                notes,
-                position
+            // Only need the parts relevant for score calculation in the temp data
+            tempMatrixData[cellKey] = {
+                multipleChoice: newData.multipleChoice,
+                trueFalse: newData.trueFalse,
+                essay: newData.essay
             };
         }
-        
-        renderMatrix();
-        updateSummaryTable();
-        closeCellModal();
-        showSuccessMessage('Đã lưu dữ liệu ô ma trận!');
+
+        // 4. Calculate the projected scores with the new data
+        const { grandTotalScore: projectedTotalScore, levelScores: projectedLevelScores } = calculateScores(tempMatrixData, scoreSettings);
+
+        // 5. Check if the change causes a significant deviation from the target percentages
+        let deviationMessage = '';
+        const TOLERANCE = 10.0; // 10% tolerance
+
+        if (projectedTotalScore > 0) {
+            taxonomyLevels.forEach(level => {
+                const projectedPercentage = (projectedLevelScores[level] / projectedTotalScore) * 100;
+                const targetPercentage = scoreSettings.percentages[level];
+                
+                if (Math.abs(projectedPercentage - targetPercentage) > TOLERANCE) {
+                    deviationMessage += `\n- Mức độ "${level}" sẽ là ${projectedPercentage.toFixed(1)}% (mục tiêu là ${targetPercentage}%).`;
+                }
+            });
+        }
+
+        // 6. If there is a deviation, ask for confirmation. Otherwise, save directly.
+        if (deviationMessage) {
+            const fullMessage = `Lưu thay đổi này sẽ khiến tỉ lệ điểm khác biệt đáng kể so với mục tiêu:` + deviationMessage + `\n\nBạn có muốn tiếp tục lưu không?`;
+            showConfirmDialog(fullMessage, performSave);
+        } else {
+            performSave();
+        }
+    }
+    
+    // --- REVISED HELPER FUNCTION ---
+    function calculateScores(data, settings) {
+        const levelScores = {};
+        taxonomyLevels.forEach(level => levelScores[level] = 0);
+
+        topics.forEach(topic => {
+            taxonomyLevels.forEach(level => {
+                const cellKey = `${topic}_${level}`;
+                const cellData = data[cellKey];
+                if (cellData) {
+                    let cellScore = 0;
+                    cellScore += (cellData.multipleChoice || 0) * settings.multipleChoice;
+                    cellScore += (cellData.trueFalse || 0) * settings.trueFalse;
+                    cellScore += (cellData.essay || 0) * settings.essay;
+                    levelScores[level] += cellScore;
+                }
+            });
+        });
+
+        const grandTotalScore = Object.values(levelScores).reduce((sum, score) => sum + score, 0);
+        return { grandTotalScore, levelScores };
     }
 
+    // --- REVISED FUNCTION ---
     function updateSummaryTable() {
         const tbody = document.getElementById('summaryTableBody');
         let html = '';
 
-        // Update percentage display in headers based on settings
         document.getElementById('knowledgePercent').textContent = `(${scoreSettings.percentages['Nhận biết']}%)`;
         document.getElementById('comprehensionPercent').textContent = `(${scoreSettings.percentages['Thông hiểu']}%)`;
         document.getElementById('applicationPercent').textContent = `(${scoreSettings.percentages['Vận dụng']}%)`;
@@ -579,7 +638,7 @@
                 return matrixData[cellKey]?.count || 0;
             });
             const total = counts.reduce((sum, count) => sum + count, 0);
-
+            
             let topicScore = 0;
             taxonomyLevels.forEach(level => {
                 const cellKey = `${topic}_${level}`;
@@ -601,32 +660,17 @@
         `;
         });
 
-        // Total row calculation
         const totalCounts = taxonomyLevels.map(level => {
             return topics.reduce((sum, topic) => {
                 const cellKey = `${topic}_${level}`;
                 return sum + (matrixData[cellKey]?.count || 0);
             }, 0);
         });
-
-        const levelScores = taxonomyLevels.map(level => {
-            return topics.reduce((levelScoreSum, topic) => {
-                const cellKey = `${topic}_${level}`;
-                const cellData = matrixData[cellKey];
-                let cellScore = 0;
-                if (cellData) {
-                    cellScore += (cellData.multipleChoice || 0) * scoreSettings.multipleChoice;
-                    cellScore += (cellData.trueFalse || 0) * scoreSettings.trueFalse;
-                    cellScore += (cellData.essay || 0) * scoreSettings.essay;
-                }
-                return levelScoreSum + cellScore;
-            }, 0);
-        });
-
+        
+        const { grandTotalScore, levelScores } = calculateScores(matrixData, scoreSettings);
+        const levelScoresArray = taxonomyLevels.map(level => levelScores[level]);
         const grandTotalQuestions = totalCounts.reduce((sum, count) => sum + count, 0);
-        const grandTotalScore = levelScores.reduce((sum, score) => sum + score, 0);
-
-        const actualScorePercentages = levelScores.map(score => {
+        const actualScorePercentages = levelScoresArray.map(score => {
             return grandTotalScore > 0 ? ((score / grandTotalScore) * 100).toFixed(1) : 0;
         });
 
@@ -636,7 +680,7 @@
             ${totalCounts.map((count, index) => `
                 <td class="border border-gray-300 dark:border-gray-600 px-4 py-2 text-center">
                     ${count} câu<br>
-                    <span class="font-normal">${levelScores[index].toFixed(2)} điểm</span><br>
+                    <span class="font-normal">${levelScoresArray[index].toFixed(2)} điểm</span><br>
                     <span class="text-xs text-green-600 dark:text-green-400 font-bold">(${actualScorePercentages[index]}%)</span>
                 </td>
             `).join('')}
@@ -644,7 +688,6 @@
             <td class="border border-gray-300 dark:border-gray-600 px-4 py-2 text-center text-green-600 dark:text-green-400">${grandTotalScore.toFixed(2)}</td>
         </tr>
         `;
-
         tbody.innerHTML = html;
     }
 
@@ -852,10 +895,8 @@ Hãy bắt đầu tạo đề thi.`;
             return;
         }
         
-        // Convert HTML to a more readable text format
         const tempDiv = document.createElement('div');
         tempDiv.innerHTML = testContent;
-        // Simple conversion, can be improved
         tempDiv.querySelectorAll('p').forEach(p => p.insertAdjacentHTML('afterend', '\n'));
         tempDiv.querySelectorAll('h1, h2, h3, h4, li').forEach(el => el.insertAdjacentHTML('afterend', '\n'));
         const textToExport = tempDiv.innerText;
@@ -873,19 +914,15 @@ Hãy bắt đầu tạo đề thi.`;
         showSuccessMessage('Đã xuất đề thi thành công!');
     }
     
-    // New function to export data to Excel
     function exportExcel() {
         if (topics.length === 0) {
             showAlert('Chưa có dữ liệu ma trận để xuất file Excel.');
             return;
         }
 
-        // --- 1. Create Workbook and Worksheets ---
         const wb = XLSX.utils.book_new();
 
-        // --- 2. Create Summary Sheet ---
         const summary_ws_data = [];
-        // Headers
         const summary_headers = [
             "Chủ đề",
             "Nhận biết (Số câu)", "Nhận biết (Điểm)",
@@ -895,7 +932,6 @@ Hãy bắt đầu tạo đề thi.`;
         ];
         summary_ws_data.push(summary_headers);
 
-        // Rows for each topic
         topics.forEach(topic => {
             const row = [topic];
             let total_q_topic = 0;
@@ -920,7 +956,6 @@ Hãy bắt đầu tạo đề thi.`;
             summary_ws_data.push(row);
         });
         
-        // Total row
         const total_row = ["Tổng cộng"];
         let grand_total_q = 0;
         let grand_total_s = 0;
@@ -943,8 +978,6 @@ Hãy bắt đầu tạo đề thi.`;
         const summary_ws = XLSX.utils.aoa_to_sheet(summary_ws_data);
         XLSX.utils.book_append_sheet(wb, summary_ws, "Ma Trận Tổng Hợp");
 
-
-        // --- 3. Create Detailed Sheet ---
         const detailed_ws_data = [];
         const detailed_headers = ["Chủ đề", "Mức độ", "Trắc nghiệm", "Đúng/Sai", "Tự luận", "Tổng câu", "Điểm", "Vị trí", "Ghi chú"];
         detailed_ws_data.push(detailed_headers);
@@ -975,7 +1008,6 @@ Hãy bắt đầu tạo đề thi.`;
         const detailed_ws = XLSX.utils.aoa_to_sheet(detailed_ws_data);
         XLSX.utils.book_append_sheet(wb, detailed_ws, "Ma Trận Chi Tiết");
 
-        // --- 4. Create Settings Sheet ---
         const settings_ws_data = [
             ["Thiết lập", "Giá trị"],
             ["Điểm trắc nghiệm", scoreSettings.multipleChoice],
@@ -988,8 +1020,6 @@ Hãy bắt đầu tạo đề thi.`;
         const settings_ws = XLSX.utils.aoa_to_sheet(settings_ws_data);
         XLSX.utils.book_append_sheet(wb, settings_ws, "Cài Đặt");
 
-
-        // --- 5. Generate and Download file ---
         const fileName = `MaTranDeKiemTra_${new Date().toISOString().split('T')[0]}.xlsx`;
         XLSX.writeFile(wb, fileName);
 
@@ -1026,6 +1056,7 @@ Hãy bắt đầu tạo đề thi.`;
         document.body.appendChild(modal);
     }
 
+    // --- REVISED FUNCTION ---
     function showConfirmDialog(message, onConfirm) {
         const modal = document.createElement('div');
         modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
@@ -1035,7 +1066,7 @@ Hãy bắt đầu tạo đề thi.`;
     <i class="fas fa-question-circle text-blue-500 mr-3 text-xl"></i>
     <h3 class="text-lg font-bold">Xác nhận</h3>
     </div>
-    <p class="text-gray-700 dark:text-gray-300 mb-4">${message}</p>
+    <p class="text-gray-700 dark:text-gray-300 mb-4 whitespace-pre-line">${message}</p>
     <div class="flex justify-end space-x-3">
     <button onclick="this.closest('.fixed').remove()" class="btn-outline">Hủy</button>
     <button id="confirmBtn" class="btn-danger">Xác nhận</button>
@@ -1135,7 +1166,8 @@ Hãy bắt đầu tạo đề thi.`;
     </div>
     `;
     }
-
+    
+    // --- REVISED FUNCTION ---
     function updatePercentageTotalInModal() {
         const knowledge = parseInt(document.getElementById('percentKnowledge').value) || 0;
         const comprehension = parseInt(document.getElementById('percentComprehension').value) || 0;
@@ -1144,8 +1176,16 @@ Hãy bắt đầu tạo đề thi.`;
 
         const totalEl = document.getElementById('totalPercent');
         totalEl.textContent = `Tổng: ${total}%`;
-        totalEl.className = total === 100 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
+        
+        // Use classList to avoid overwriting other styling classes
+        totalEl.classList.remove('text-green-600', 'dark:text-green-400', 'text-red-600', 'dark:text-red-400');
+        if (total === 100) {
+            totalEl.classList.add('text-green-600', 'dark:text-green-400');
+        } else {
+            totalEl.classList.add('text-red-600', 'dark:text-red-400');
+        }
     }
+
 
     // Event listeners
     document.addEventListener('DOMContentLoaded', function() {
@@ -1183,4 +1223,3 @@ Hãy bắt đầu tạo đề thi.`;
 </style>
 </body>
 </html>
-
